@@ -1,0 +1,90 @@
+name: "Coolify Deploy"
+description: "Trigger a deployment on Coolify via the API"
+
+inputs:
+  coolify_url:
+    description: "Coolify instance base URL (e.g., https://coolify.example.com)"
+    required: true
+  coolify_token:
+    description: "Coolify API bearer token"
+    required: true
+  uuid:
+    description: "Resource UUID(s), comma-separated"
+    required: false
+    default: ""
+  tag:
+    description: "Coolify tag name(s), comma-separated"
+    required: false
+    default: ""
+  force:
+    description: "Force rebuild"
+    required: false
+    default: "false"
+
+outputs:
+  response:
+    description: "API response body"
+    value: ${{ steps.deploy.outputs.response }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Trigger Coolify deployment
+      id: deploy
+      shell: bash
+      env:
+        COOLIFY_URL: ${{ inputs.coolify_url }}
+        COOLIFY_TOKEN: ${{ inputs.coolify_token }}
+        UUID: ${{ inputs.uuid }}
+        TAG: ${{ inputs.tag }}
+        FORCE: ${{ inputs.force }}
+      run: |
+        # Mask the token so it never appears in logs
+        echo "::add-mask::${COOLIFY_TOKEN}"
+
+        # Validate that at least one of uuid or tag is provided
+        if [[ -z "${UUID}" && -z "${TAG}" ]]; then
+          echo "::error::At least one of 'uuid' or 'tag' must be provided."
+          exit 1
+        fi
+
+        # Build query parameters
+        PARAMS=""
+        if [[ -n "${UUID}" ]]; then
+          PARAMS="${PARAMS}&uuid=${UUID}"
+        fi
+        if [[ -n "${TAG}" ]]; then
+          PARAMS="${PARAMS}&tag=${TAG}"
+        fi
+        if [[ "${FORCE}" == "true" ]]; then
+          PARAMS="${PARAMS}&force=true"
+        fi
+        # Remove leading '&'
+        PARAMS="${PARAMS#&}"
+
+        URL="${COOLIFY_URL%/}/api/v1/deploy?${PARAMS}"
+
+        echo "Triggering deployment: ${URL}"
+
+        HTTP_RESPONSE=$(curl -s -w "\n%{http_code}" \
+          -X GET \
+          -H "Authorization: Bearer ${COOLIFY_TOKEN}" \
+          -H "Accept: application/json" \
+          "${URL}")
+
+        HTTP_BODY=$(echo "${HTTP_RESPONSE}" | sed '$d')
+        HTTP_STATUS=$(echo "${HTTP_RESPONSE}" | tail -n 1)
+
+        echo "HTTP Status: ${HTTP_STATUS}"
+        echo "Response: ${HTTP_BODY}"
+
+        # Set output
+        echo "response=${HTTP_BODY}" >> "${GITHUB_OUTPUT}"
+
+        # Fail on non-2xx status
+        if [[ "${HTTP_STATUS}" -lt 200 || "${HTTP_STATUS}" -ge 300 ]]; then
+          echo "::error::Coolify deploy failed with status ${HTTP_STATUS}: ${HTTP_BODY}"
+          exit 1
+        fi
+
+        echo "Deployment triggered successfully."

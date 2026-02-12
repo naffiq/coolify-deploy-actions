@@ -1,0 +1,84 @@
+name: "Coolify Set Env Var"
+description: "Update an environment variable on a Coolify application (e.g., set Docker image tag)"
+
+inputs:
+  coolify_url:
+    description: "Coolify instance base URL (e.g., https://coolify.example.com)"
+    required: true
+  coolify_token:
+    description: "Coolify API bearer token"
+    required: true
+  app_uuid:
+    description: "Application UUID"
+    required: true
+  key:
+    description: "Env var key (e.g., IMAGE_TAG)"
+    required: true
+  value:
+    description: "Env var value (e.g., v1.2.3)"
+    required: true
+  is_preview:
+    description: "Whether this is a preview env var"
+    required: false
+    default: "false"
+
+outputs:
+  response:
+    description: "API response body"
+    value: ${{ steps.set-env.outputs.response }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Update Coolify environment variable
+      id: set-env
+      shell: bash
+      env:
+        COOLIFY_URL: ${{ inputs.coolify_url }}
+        COOLIFY_TOKEN: ${{ inputs.coolify_token }}
+        APP_UUID: ${{ inputs.app_uuid }}
+        KEY: ${{ inputs.key }}
+        VALUE: ${{ inputs.value }}
+        IS_PREVIEW: ${{ inputs.is_preview }}
+      run: |
+        # Mask the token so it never appears in logs
+        echo "::add-mask::${COOLIFY_TOKEN}"
+
+        # Validate required inputs
+        if [[ -z "${APP_UUID}" ]]; then
+          echo "::error::'app_uuid' is required."
+          exit 1
+        fi
+        if [[ -z "${KEY}" ]]; then
+          echo "::error::'key' is required."
+          exit 1
+        fi
+
+        URL="${COOLIFY_URL%/}/api/v1/applications/${APP_UUID}/envs"
+
+        echo "Updating env var '${KEY}' on application ${APP_UUID}"
+
+        HTTP_RESPONSE=$(curl -s -w "\n%{http_code}" \
+          -X PATCH \
+          -H "Authorization: Bearer ${COOLIFY_TOKEN}" \
+          -H "Accept: application/json" \
+          -H "Content-Type: application/json" \
+          -d "{\"key\": \"${KEY}\", \"value\": \"${VALUE}\", \"is_preview\": ${IS_PREVIEW}}" \
+          "${URL}")
+
+        HTTP_BODY=$(echo "${HTTP_RESPONSE}" | sed '$d')
+        HTTP_STATUS=$(echo "${HTTP_RESPONSE}" | tail -n 1)
+
+        echo "HTTP Status: ${HTTP_STATUS}"
+        echo "Response: ${HTTP_BODY}"
+
+        # Set output
+        echo "response=${HTTP_BODY}" >> "${GITHUB_OUTPUT}"
+
+        # Fail on non-2xx status
+        if [[ "${HTTP_STATUS}" -lt 200 || "${HTTP_STATUS}" -ge 300 ]]; then
+          echo "::error::Failed to update env var with status ${HTTP_STATUS}: ${HTTP_BODY}"
+          exit 1
+        fi
+
+        echo "Environment variable '${KEY}' updated successfully."
